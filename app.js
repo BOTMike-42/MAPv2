@@ -417,6 +417,11 @@ function escapeHtml(str) {
 // nodes would still be hidden.
 const SEARCH_JUMP_ZOOM = 8;
 
+// Width of the sidebar in pixels. Must match the width in style.css.
+// Used so that "fly to" centres the node in the visible part of the map,
+// not underneath the sidebar.
+const SIDEBAR_WIDTH = 320;
+
 // Maximum number of results listed under the search box.
 const MAX_SEARCH_RESULTS = 50;
 
@@ -566,6 +571,8 @@ function goToInstitution(inst) {
   map.flyTo({
     center: coords,
     zoom: Math.max(map.getZoom(), SEARCH_JUMP_ZOOM), // never zoom OUT
+    // Keep the node clear of the sidebar while it is showing.
+    padding: { left: isSidebarOpen() ? SIDEBAR_WIDTH : 0 },
     essential: true,
   });
 
@@ -626,6 +633,36 @@ function renderSearchResults() {
   if (matches.length > MAX_SEARCH_RESULTS) {
     addResultMessage(`…and ${matches.length - MAX_SEARCH_RESULTS} more. Keep typing to narrow it down.`);
   }
+}
+
+/* ---------- Show / hide the sidebar ---------- */
+
+/**
+ * True while the sidebar is visible. (The CSS class "sidebar-closed"
+ * on <body> is what makes it slide away.)
+ */
+function isSidebarOpen() {
+  return !document.body.classList.contains("sidebar-closed");
+}
+
+/**
+ * Slides the sidebar away, or brings it back.
+ */
+function toggleSidebar() {
+  document.body.classList.toggle("sidebar-closed");
+
+  const label = isSidebarOpen() ? "Hide sidebar" : "Show sidebar";
+  const button = document.getElementById("sidebar-toggle");
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
+
+/**
+ * Makes the tab button work. Called straight away (not after the CSV
+ * loads) so the button never depends on the data.
+ */
+function setupSidebarToggle() {
+  document.getElementById("sidebar-toggle").addEventListener("click", toggleSidebar);
 }
 
 /* ---------- Setup ---------- */
@@ -719,4 +756,5 @@ function loadData() {
     });
 }
 
+setupSidebarToggle();
 loadData();
