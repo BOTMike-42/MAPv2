@@ -12,38 +12,170 @@ html, body {
   background: #fff;
 }
 
-#header {
+/* ---------- Sidebar ---------- */
+/* SIDEBAR_WIDTH is used in three places below (sidebar, map, status box).
+   Change all three together if you want a wider or narrower sidebar. */
+#sidebar {
   position: absolute;
   top: 0;
+  bottom: 0;
   left: 0;
+  width: 320px;
   z-index: 2;
-  padding: 14px 18px;
-  background: rgba(255, 255, 255, 0.92);
-  border-bottom: 1px solid #ccc;
-  border-right: 1px solid #ccc;
-  border-bottom-right-radius: 6px;
-  max-width: 340px;
+  overflow-y: auto;
+  background: #fff;
+  border-right: 1px solid #000;
 }
 
-#header h1 {
+.sidebar-section {
+  padding: 14px 18px;
+  border-bottom: 1px solid #ccc;
+}
+
+#sidebar h1 {
   margin: 0 0 4px 0;
   font-size: 18px;
   font-weight: 700;
   color: #000;
 }
 
-#header p {
+#sidebar .intro {
   margin: 0;
   font-size: 12.5px;
   color: #444;
   line-height: 1.4;
 }
 
+.sidebar-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+#search-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #000;
+  background: #fff;
+  border: 1px solid #000;
+  border-radius: 4px;
+}
+
+#search-input:focus {
+  outline: 2px solid #000;
+  outline-offset: 1px;
+}
+
+/* ---------- Search results list ---------- */
+#search-results {
+  list-style: none;
+  margin: 8px 0 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+#search-results li {
+  padding: 7px 8px;
+  font-size: 12.5px;
+  line-height: 1.3;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+}
+
+#search-results li:hover,
+#search-results li:focus {
+  background: #000;
+  color: #fff;
+  outline: none;
+}
+
+#search-results li.no-hover {
+  cursor: default;
+  color: #666;
+}
+
+#search-results li.no-hover:hover {
+  background: none;
+  color: #666;
+}
+
+.result-meta {
+  color: #777;
+  font-size: 11.5px;
+}
+
+#search-results li:hover .result-meta,
+#search-results li:focus .result-meta {
+  color: #ccc;
+}
+
+/* ---------- Country filter ---------- */
+#country-filter summary {
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.filter-buttons {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 8px 0;
+}
+
+.filter-buttons button {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #000;
+  background: #fff;
+  border: 1px solid #000;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.filter-buttons button:hover {
+  background: #000;
+  color: #fff;
+}
+
+#country-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+#country-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+#country-list input[type="checkbox"] {
+  accent-color: #000;
+  margin: 0;
+}
+
+#country-list .count {
+  margin-left: auto;
+  color: #777;
+  font-size: 11.5px;
+}
+
 #map {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
+  left: 320px; /* leaves room for the sidebar */
   right: 0;
 }
 
@@ -59,7 +191,7 @@ html, body {
 .status {
   position: absolute;
   bottom: 16px;
-  left: 16px;
+  left: 336px; /* sidebar width (320px) + 16px gap */
   z-index: 2;
   background: #fff;
   border: 1px solid #000;
