@@ -107,3 +107,19 @@ html, body {
 .maplibregl-ctrl-attrib {
   font-size: 11px;
 }
+
+/* ---------- Country popup: top institutes list ---------- */
+.popup-list {
+  margin: 4px 0 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: #222;
+}
+
+.popup-list li {
+  margin: 2px 0;
+}
+
+.popup-list span.label {
+  color: #666;
+}
