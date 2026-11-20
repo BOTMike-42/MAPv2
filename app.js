@@ -17,6 +17,10 @@
  * 7. Clicking a node shows a popup:
  *      - institution node: institution / country / papers
  *      - country node:     country name / papers / top 3 institutes
+ * 8. Left sidebar (see the SIDEBAR section near the bottom):
+ *      - search box: type an institution name, click a result and the
+ *        map flies to it and opens its popup
+ *      - country filter: tick/untick countries to show/hide their nodes
  */
 
 const CSV_PATH = "MAP_DATA.csv";
@@ -266,6 +270,7 @@ function buildCountriesGeoJSON(parsedRows) {
     geometry: { type: "Point", coordinates: [c.lon, c.lat] },
     properties: {
       country: c.name,
+      code: c.code, // 2-letter code, used by the sidebar country filter
       papers: c.totalPapers,
       // MapLibre flattens lists inside properties, so store the top
       // institutes as text and turn it back into a list on click.
@@ -314,7 +319,21 @@ function showPopup(e, html) {
     coords[0] += e.lngLat.lng > coords[0] ? 360 : -360;
   }
 
-  new maplibregl.Popup({ closeButton: true, maxWidth: "280px" })
+  openPopupAt(coords, html);
+}
+
+// Remembers the popup that is currently open, so we can close it
+// before opening a new one (only one popup at a time).
+let currentPopup = null;
+
+/**
+ * Opens a popup at the given [lng, lat]. Used by map clicks AND by the
+ * sidebar search.
+ */
+function openPopupAt(coords, html) {
+  if (currentPopup) currentPopup.remove();
+
+  currentPopup = new maplibregl.Popup({ closeButton: true, maxWidth: "280px" })
     .setLngLat(coords)
     .setHTML(html)
     .addTo(map);
@@ -374,6 +393,9 @@ function addLayers(institutionsGeoJSON, countriesGeoJSON) {
 
   makeClickable("countries-circles", countryPopupHtml);
   makeClickable("institutions-circles", institutionPopupHtml);
+
+  // The layers now exist, so apply whatever the country checkboxes say.
+  applyCountryFilter();
 }
 
 // Minimal HTML-escaping so institution/country names can't break the popup markup.
@@ -384,6 +406,244 @@ function escapeHtml(str) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+/* =====================================================================
+ * SIDEBAR: institution search + country filter
+ * ===================================================================== */
+
+// How far the map zooms in when you pick a search result.
+// Must be at least COUNTRY_TO_INSTITUTION_ZOOM, otherwise the institution
+// nodes would still be hidden.
+const SEARCH_JUMP_ZOOM = 8;
+
+// Maximum number of results listed under the search box.
+const MAX_SEARCH_RESULTS = 50;
+
+// Grab the sidebar elements from index.html.
+const searchInput = document.getElementById("search-input");
+const searchResults = document.getElementById("search-results");
+const countryList = document.getElementById("country-list");
+const countrySummary = document.getElementById("country-summary");
+
+let allInstitutions = [];          // every institution that has coordinates
+let selectedCountries = new Set(); // country codes that are currently ticked
+
+/**
+ * Lower-cases text and removes accents, so typing "universite" also
+ * finds "Université" and "zurich" finds "Zürich".
+ */
+function normalizeText(text) {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+}
+
+/* ---------- Country filter ---------- */
+
+/**
+ * Shows only the nodes of ticked countries, on BOTH layers
+ * (country circles and institution circles).
+ */
+function applyCountryFilter() {
+  // The layers are added a moment after the page loads; do nothing until then.
+  if (!map.getLayer("institutions-circles")) return;
+
+  const codes = [...selectedCountries];
+  map.setFilter("institutions-circles", ["in", ["get", "country"], ["literal", codes]]);
+  map.setFilter("countries-circles", ["in", ["get", "code"], ["literal", codes]]);
+}
+
+/**
+ * Updates the title of the country box, e.g. "Filter by country (12 of 52 selected)".
+ */
+function updateCountrySummary() {
+  const total = countryList.querySelectorAll("input").length;
+  countrySummary.textContent =
+    `Filter by country (${selectedCountries.size} of ${total} selected)`;
+}
+
+/**
+ * Builds one checkbox row per country (alphabetical), all ticked at the start.
+ */
+function buildCountryList() {
+  // Count how many drawable institutions each country has.
+  const counts = new Map();
+  for (const inst of allInstitutions) {
+    counts.set(inst.country, (counts.get(inst.country) || 0) + 1);
+  }
+
+  const countries = [...counts.keys()]
+    .filter((code) => code) // ignore rows with an empty country
+    .map((code) => ({ code, name: countryName(code), count: counts.get(code) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  selectedCountries = new Set(countries.map((c) => c.code));
+
+  countryList.innerHTML = "";
+  for (const c of countries) {
+    const item = document.createElement("li");
+    const label = document.createElement("label");
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = c.code;
+    checkbox.checked = true;
+
+    const name = document.createElement("span");
+    name.textContent = c.name;
+
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = c.count;
+
+    label.append(checkbox, name, count);
+    item.append(label);
+    countryList.append(item);
+  }
+
+  updateCountrySummary();
+}
+
+/**
+ * Called after any change to the ticked countries: refreshes the map,
+ * the box title, and the search results.
+ */
+function onCountrySelectionChanged() {
+  applyCountryFilter();
+  updateCountrySummary();
+  renderSearchResults();
+}
+
+/**
+ * Ticks (true) or unticks (false) every country at once.
+ */
+function setAllCountries(checked) {
+  selectedCountries = new Set();
+  for (const checkbox of countryList.querySelectorAll("input")) {
+    checkbox.checked = checked;
+    if (checked) selectedCountries.add(checkbox.value);
+  }
+  onCountrySelectionChanged();
+}
+
+/**
+ * Reacts to a single checkbox being ticked or unticked.
+ */
+function handleCheckboxChange(event) {
+  const checkbox = event.target;
+  if (checkbox.checked) {
+    selectedCountries.add(checkbox.value);
+  } else {
+    selectedCountries.delete(checkbox.value);
+  }
+  onCountrySelectionChanged();
+}
+
+/* ---------- Institution search ---------- */
+
+/**
+ * Returns the institutions that match the typed text and belong to a
+ * ticked country, biggest (most papers) first.
+ */
+function findMatches(query) {
+  const q = normalizeText(query.trim());
+  if (q === "") return [];
+
+  return allInstitutions
+    .filter((inst) => selectedCountries.has(inst.country))
+    .filter((inst) => normalizeText(inst.institution).includes(q))
+    .sort((a, b) => b.papers - a.papers);
+}
+
+/**
+ * Flies the map to an institution and opens its popup.
+ */
+function goToInstitution(inst) {
+  const coords = [inst.lon, inst.lat];
+
+  map.flyTo({
+    center: coords,
+    zoom: Math.max(map.getZoom(), SEARCH_JUMP_ZOOM), // never zoom OUT
+    essential: true,
+  });
+
+  openPopupAt(coords, institutionPopupHtml(inst));
+}
+
+/**
+ * Adds one line of plain text (not clickable) to the results list,
+ * used for messages like "No matches".
+ */
+function addResultMessage(text) {
+  const item = document.createElement("li");
+  item.className = "no-hover";
+  item.textContent = text;
+  searchResults.append(item);
+}
+
+/**
+ * Adds one clickable result line for an institution.
+ */
+function addResultItem(inst) {
+  const item = document.createElement("li");
+  item.tabIndex = 0; // lets keyboard users reach it with Tab
+
+  const name = document.createElement("div");
+  name.textContent = inst.institution;
+
+  const meta = document.createElement("div");
+  meta.className = "result-meta";
+  meta.textContent = `${countryName(inst.country)} · ${inst.papers} papers`;
+
+  item.append(name, meta);
+  item.addEventListener("click", () => goToInstitution(inst));
+  item.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") goToInstitution(inst);
+  });
+
+  searchResults.append(item);
+}
+
+/**
+ * Redraws the list under the search box for whatever is typed right now.
+ */
+function renderSearchResults() {
+  searchResults.innerHTML = "";
+
+  if (searchInput.value.trim() === "") return; // nothing typed: empty list
+
+  const matches = findMatches(searchInput.value);
+
+  if (matches.length === 0) {
+    addResultMessage("No matches in the selected countries.");
+    return;
+  }
+
+  matches.slice(0, MAX_SEARCH_RESULTS).forEach(addResultItem);
+
+  if (matches.length > MAX_SEARCH_RESULTS) {
+    addResultMessage(`…and ${matches.length - MAX_SEARCH_RESULTS} more. Keep typing to narrow it down.`);
+  }
+}
+
+/* ---------- Setup ---------- */
+
+/**
+ * Sets up the whole sidebar. Called once, as soon as the CSV is parsed.
+ */
+function initSidebar(parsedRows) {
+  allInstitutions = parsedRows.filter((r) => r.hasCoords);
+
+  buildCountryList();
+
+  searchInput.addEventListener("input", renderSearchResults);
+  countryList.addEventListener("change", handleCheckboxChange);
+  document.getElementById("select-all").addEventListener("click", () => setAllCountries(true));
+  document.getElementById("clear-all").addEventListener("click", () => setAllCountries(false));
+
+  applyCountryFilter();
 }
 
 function loadData() {
@@ -414,6 +674,7 @@ function loadData() {
       }
 
       const parsedRows = parseRows(parsed.data);
+      initSidebar(parsedRows); // fills the search box + country list
       const institutionsGeoJSON = buildInstitutionsGeoJSON(parsedRows);
       const countriesGeoJSON = buildCountriesGeoJSON(parsedRows);
 
