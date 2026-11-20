@@ -13,18 +13,65 @@ html, body {
 }
 
 /* ---------- Sidebar ---------- */
-/* SIDEBAR_WIDTH is used in three places below (sidebar, map, status box).
-   Change all three together if you want a wider or narrower sidebar. */
+/* The sidebar floats ON TOP of the map. Only its BACKGROUND is see-through
+   (the 0.7 in rgba is the opacity: lower = more see-through, 1 = solid).
+   Text, buttons and the search box stay fully solid.
+   The width (320px) is also used by the toggle button and status box below
+   and by SIDEBAR_WIDTH in app.js; change them together. */
 #sidebar {
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
   width: 320px;
-  z-index: 2;
+  z-index: 3;
   overflow-y: auto;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.7);
   border-right: 1px solid #000;
+  transition: transform 0.3s ease;
+}
+
+/* Hidden state: the sidebar slides out past the left edge of the screen. */
+body.sidebar-closed #sidebar {
+  transform: translateX(-100%);
+}
+
+/* ---------- Sidebar toggle tab ---------- */
+#sidebar-toggle {
+  position: absolute;
+  top: 14px;
+  left: 320px; /* sits on the sidebar's right edge */
+  z-index: 4;
+  width: 30px;
+  height: 44px;
+  padding: 0;
+  font-size: 22px;
+  line-height: 1;
+  font-family: inherit;
+  color: #000;
+  background: #fff;
+  border: 1px solid #000;
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  cursor: pointer;
+  transition: left 0.3s ease;
+}
+
+#sidebar-toggle::before {
+  content: "\2039"; /* arrow pointing left = "hide" */
+}
+
+#sidebar-toggle:hover {
+  background: #000;
+  color: #fff;
+}
+
+body.sidebar-closed #sidebar-toggle {
+  left: 0;
+}
+
+body.sidebar-closed #sidebar-toggle::before {
+  content: "\203A"; /* arrow pointing right = "show" */
 }
 
 .sidebar-section {
@@ -175,7 +222,7 @@ html, body {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 320px; /* leaves room for the sidebar */
+  left: 0; /* full screen: the sidebar floats on top */
   right: 0;
 }
 
@@ -191,7 +238,8 @@ html, body {
 .status {
   position: absolute;
   bottom: 16px;
-  left: 336px; /* sidebar width (320px) + 16px gap */
+  left: 346px; /* sidebar width (320px) + toggle tab + gap */
+  transition: left 0.3s ease;
   z-index: 2;
   background: #fff;
   border: 1px solid #000;
@@ -200,6 +248,11 @@ html, body {
   font-size: 13px;
   max-width: 360px;
   border-radius: 4px;
+}
+
+/* When the sidebar is hidden, the status box moves back to the left edge. */
+body.sidebar-closed .status {
+  left: 46px; /* leaves room for the small tab button */
 }
 
 /* ---------- Popup (black & white theme) ---------- */
