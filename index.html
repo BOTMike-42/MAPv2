@@ -16,10 +16,32 @@
 </head>
 <body>
 
-  <header id="header">
-    <h1>Research Institutions</h1>
-    <p>Node size reflects number of papers. Click a node for details.</p>
-  </header>
+  <!-- Left sidebar: title, institution search, and country filter -->
+  <aside id="sidebar">
+
+    <div class="sidebar-section">
+      <h1>Research Institutions</h1>
+      <p class="intro">Node size reflects number of papers. Click a node for details.</p>
+    </div>
+
+    <!-- Search box + list of matching institutions -->
+    <div class="sidebar-section">
+      <label for="search-input" class="sidebar-label">Search institutions</label>
+      <input id="search-input" type="search" placeholder="Type an institution name…" autocomplete="off" />
+      <ul id="search-results"></ul>
+    </div>
+
+    <!-- Extendable country list: click the title to open / close it -->
+    <details id="country-filter" class="sidebar-section">
+      <summary id="country-summary">Filter by country</summary>
+      <div class="filter-buttons">
+        <button id="select-all" type="button">Select all</button>
+        <button id="clear-all" type="button">Clear all</button>
+      </div>
+      <ul id="country-list"></ul>
+    </details>
+
+  </aside>
 
   <div id="map"></div>
 
