@@ -33,7 +33,7 @@ const COUNTRY_MAX_RADIUS = 50;
 // CHANGE THIS to control when countries split into institutions.
 // Below this zoom level you see countries; at or above it you see institutions.
 // (Bigger number = you have to zoom in further before they split.)
-const COUNTRY_TO_INSTITUTION_ZOOM = 4;
+const COUNTRY_TO_INSTITUTION_ZOOM = 3;
 
 // How many institutes to list in a country popup.
 const TOP_INSTITUTES_COUNT = 3;
