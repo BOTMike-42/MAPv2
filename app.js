@@ -3,21 +3,40 @@
  * ---------------------------------------------------
  * 1. Fetches MAP_DATA.csv (semicolon-delimited, UTF-8).
  * 2. Parses it with PapaParse.
- * 3. Builds a GeoJSON FeatureCollection, one point per institution
- *    that has valid latitude/longitude.
- * 4. Renders it on a MapLibre GL map using a free OpenStreetMap
- *    raster style (no API key required).
- * 5. Node radius is scaled by sqrt(papers) so a few very large
- *    institutions don't drown out everything else.
- * 6. Clicking a node shows a popup with institution / country / papers.
+ * 3. Builds two GeoJSON layers:
+ *      - institutions: one point per institution with valid coordinates
+ *      - countries:    one big point per country (paper-weighted average
+ *                      position of its institutions)
+ * 4. Renders them on a MapLibre GL map using a free Esri raster style
+ *    (no API key required).
+ * 5. Zoomed OUT: only the country nodes are shown.
+ *    Zoomed IN (past COUNTRY_TO_INSTITUTION_ZOOM): the country nodes
+ *    disappear and the individual institutions appear.
+ * 6. Node radius is scaled by sqrt(papers) so a few very large
+ *    nodes don't drown out everything else.
+ * 7. Clicking a node shows a popup:
+ *      - institution node: institution / country / papers
+ *      - country node:     country name / papers / top 3 institutes
  */
 
 const CSV_PATH = "MAP_DATA.csv";
 const CSV_DELIMITER = ";";
 
-// Radius range (in pixels) that circles will be scaled between.
+// Radius range (in pixels) for individual institution circles.
 const MIN_RADIUS = 3;
 const MAX_RADIUS = 24;
+
+// Radius range (in pixels) for the big merged country circles.
+const COUNTRY_MIN_RADIUS = 8;
+const COUNTRY_MAX_RADIUS = 50;
+
+// CHANGE THIS to control when countries split into institutions.
+// Below this zoom level you see countries; at or above it you see institutions.
+// (Bigger number = you have to zoom in further before they split.)
+const COUNTRY_TO_INSTITUTION_ZOOM = 4;
+
+// How many institutes to list in a country popup.
+const TOP_INSTITUTES_COUNT = 3;
 
 const statusBox = document.getElementById("status");
 
@@ -104,55 +123,65 @@ map.addControl(
 /**
  * Turns a raw "papers" count into a circle radius (in px) using a
  * square-root scale. Square-root (rather than linear) keeps a single
- * huge outlier institution from making every other node invisible,
- * because circle *area* then scales roughly linearly with paper count.
+ * huge outlier from making every other node invisible, because circle
+ * *area* then scales roughly linearly with paper count.
+ * minRadius / maxRadius let us reuse this for both institutions and countries.
  */
-function papersToRadius(papers, minPapers, maxPapers) {
-  if (maxPapers === minPapers) return (MIN_RADIUS + MAX_RADIUS) / 2;
+function papersToRadius(papers, minPapers, maxPapers, minRadius = MIN_RADIUS, maxRadius = MAX_RADIUS) {
+  if (maxPapers === minPapers) return (minRadius + maxRadius) / 2;
 
   const sqrtVal = Math.sqrt(papers);
   const sqrtMin = Math.sqrt(minPapers);
   const sqrtMax = Math.sqrt(maxPapers);
 
   const t = (sqrtVal - sqrtMin) / (sqrtMax - sqrtMin); // 0..1
-  return MIN_RADIUS + t * (MAX_RADIUS - MIN_RADIUS);
+  return minRadius + t * (maxRadius - minRadius);
 }
 
-function buildGeoJSON(rows) {
-  const skipped = [];
-  const validRows = [];
+/**
+ * Cleans the raw CSV rows. Keeps every row that has a paper count
+ * (so country totals are complete), and marks whether it has usable
+ * coordinates (lat/lon are null when missing).
+ */
+function parseRows(rows) {
+  const parsed = [];
 
   for (const row of rows) {
+    const papers = parseInt(row.papers, 10);
+    if (!Number.isFinite(papers)) continue;
+
     const lat = parseFloat(row.latitude);
     const lon = parseFloat(row.longitude);
-    const papers = parseInt(row.papers, 10);
-
-    const hasValidCoords =
+    const hasCoords =
       Number.isFinite(lat) &&
       Number.isFinite(lon) &&
       Math.abs(lat) <= 90 &&
       Math.abs(lon) <= 180;
 
-    if (!hasValidCoords || !Number.isFinite(papers)) {
-      skipped.push(row.institution || "(unnamed row)");
-      continue;
-    }
-
-    validRows.push({ ...row, lat, lon, papers });
+    parsed.push({
+      institution: row.institution,
+      country: (row.country || "").trim(),
+      papers,
+      lat: hasCoords ? lat : null,
+      lon: hasCoords ? lon : null,
+      hasCoords,
+    });
   }
 
-  if (skipped.length > 0) {
-    console.warn(
-      `Skipped ${skipped.length} institution(s) with missing/invalid coordinates:`,
-      skipped
-    );
-  }
+  return parsed;
+}
 
-  const paperCounts = validRows.map((r) => r.papers);
+/**
+ * Builds the institution points (only institutions with valid coordinates).
+ */
+function buildInstitutionsGeoJSON(parsedRows) {
+  const withCoords = parsedRows.filter((r) => r.hasCoords);
+
+  const paperCounts = withCoords.map((r) => r.papers);
   const minPapers = Math.min(...paperCounts);
   const maxPapers = Math.max(...paperCounts);
 
-  const features = validRows.map((row) => ({
+  const features = withCoords.map((row) => ({
     type: "Feature",
     geometry: {
       type: "Point",
@@ -166,25 +195,98 @@ function buildGeoJSON(rows) {
     },
   }));
 
-  return {
-    geojson: { type: "FeatureCollection", features },
-    skippedCount: skipped.length,
-    totalCount: rows.length,
-  };
+  return { type: "FeatureCollection", features };
 }
 
-function addInstitutionsLayer(geojson) {
-  map.addSource("institutions", {
-    type: "geojson",
-    data: geojson,
-  });
+/**
+ * Turns a 2-letter country code (e.g. "NL") into a readable name
+ * ("Netherlands") using the browser's built-in region names.
+ * Falls back to the code itself if the browser doesn't know it.
+ */
+const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 
-  map.addLayer({
-    id: "institutions-circles",
+function countryName(code) {
+  try {
+    return regionNames.of(code) || code;
+  } catch (err) {
+    return code;
+  }
+}
+
+/**
+ * Groups all rows by country and works out, for each country:
+ *   - total paper count
+ *   - top institutes by paper count
+ *   - a map position (paper-weighted average of its institutions' coordinates)
+ * Countries where no institution has coordinates cannot be placed and are skipped.
+ */
+function groupByCountry(parsedRows) {
+  const groups = new Map();
+
+  for (const row of parsedRows) {
+    if (!row.country) continue;
+    if (!groups.has(row.country)) groups.set(row.country, []);
+    groups.get(row.country).push(row);
+  }
+
+  const countries = [];
+  for (const [code, rows] of groups) {
+    const placed = rows.filter((r) => r.hasCoords);
+    if (placed.length === 0) continue;
+
+    const totalPapers = rows.reduce((sum, r) => sum + r.papers, 0);
+    const placedPapers = placed.reduce((sum, r) => sum + r.papers, 0);
+
+    const lon = placed.reduce((sum, r) => sum + r.lon * r.papers, 0) / placedPapers;
+    const lat = placed.reduce((sum, r) => sum + r.lat * r.papers, 0) / placedPapers;
+
+    const topInstitutes = [...rows]
+      .sort((a, b) => b.papers - a.papers)
+      .slice(0, TOP_INSTITUTES_COUNT)
+      .map((r) => ({ institution: r.institution, papers: r.papers }));
+
+    countries.push({ code, name: countryName(code), totalPapers, lon, lat, topInstitutes });
+  }
+
+  return countries;
+}
+
+/**
+ * Builds the big merged country points.
+ */
+function buildCountriesGeoJSON(parsedRows) {
+  const countries = groupByCountry(parsedRows);
+
+  const totals = countries.map((c) => c.totalPapers);
+  const minPapers = Math.min(...totals);
+  const maxPapers = Math.max(...totals);
+
+  const features = countries.map((c) => ({
+    type: "Feature",
+    geometry: { type: "Point", coordinates: [c.lon, c.lat] },
+    properties: {
+      country: c.name,
+      papers: c.totalPapers,
+      // MapLibre flattens lists inside properties, so store the top
+      // institutes as text and turn it back into a list on click.
+      topInstitutes: JSON.stringify(c.topInstitutes),
+      radius: papersToRadius(c.totalPapers, minPapers, maxPapers, COUNTRY_MIN_RADIUS, COUNTRY_MAX_RADIUS),
+    },
+  }));
+
+  return { type: "FeatureCollection", features };
+}
+
+/**
+ * Shared circle styling. Big circles are drawn first so small ones
+ * are never hidden underneath them.
+ */
+function circleLayer(id, source, zoomRange) {
+  return {
+    id,
     type: "circle",
-    source: "institutions",
-    // Draw big circles first and small ones on top, so small institutions
-    // are never hidden underneath large ones (important with 600+ nodes).
+    source,
+    ...zoomRange,
     layout: {
       "circle-sort-key": ["-", ["get", "papers"]],
     },
@@ -196,41 +298,82 @@ function addInstitutionsLayer(geojson) {
       "circle-stroke-color": "#000000",
       "circle-stroke-opacity": 0.9,
     },
-  });
+  };
+}
 
-  // Pointer cursor on hover
-  map.on("mouseenter", "institutions-circles", () => {
+/**
+ * Shows a popup at the clicked node.
+ */
+function showPopup(e, html) {
+  const feature = e.features[0];
+  const coords = feature.geometry.coordinates.slice();
+
+  // If the map is zoomed/panned such that the point is duplicated
+  // across the antimeridian, adjust the popup to the correct copy.
+  while (Math.abs(e.lngLat.lng - coords[0]) > 180) {
+    coords[0] += e.lngLat.lng > coords[0] ? 360 : -360;
+  }
+
+  new maplibregl.Popup({ closeButton: true, maxWidth: "280px" })
+    .setLngLat(coords)
+    .setHTML(html)
+    .addTo(map);
+}
+
+function institutionPopupHtml({ institution, country, papers }) {
+  return `
+    <div class="popup-institution">${escapeHtml(institution)}</div>
+    <div class="popup-row"><span class="label">Country:</span> ${escapeHtml(country)}</div>
+    <div class="popup-row"><span class="label">Papers:</span> ${papers}</div>
+  `;
+}
+
+function countryPopupHtml({ country, papers, topInstitutes }) {
+  const top = JSON.parse(topInstitutes);
+  const items = top
+    .map((t) => `<li>${escapeHtml(t.institution)} <span class="label">(${t.papers})</span></li>`)
+    .join("");
+
+  return `
+    <div class="popup-institution">${escapeHtml(country)}</div>
+    <div class="popup-row"><span class="label">Papers:</span> ${papers}</div>
+    <div class="popup-row"><span class="label">Top ${top.length} institutes:</span></div>
+    <ol class="popup-list">${items}</ol>
+  `;
+}
+
+/**
+ * Makes a layer clickable: pointer cursor on hover, popup on click.
+ */
+function makeClickable(layerId, buildHtml) {
+  map.on("mouseenter", layerId, () => {
     map.getCanvas().style.cursor = "pointer";
   });
-  map.on("mouseleave", "institutions-circles", () => {
+  map.on("mouseleave", layerId, () => {
     map.getCanvas().style.cursor = "";
   });
-
-  // Popup on click
-  map.on("click", "institutions-circles", (e) => {
-    const feature = e.features[0];
-    const { institution, country, papers } = feature.properties;
-    const coords = feature.geometry.coordinates.slice();
-
-    // If the map is zoomed/panned such that the point is duplicated
-    // across the antimeridian, adjust the popup to the correct copy.
-    while (Math.abs(e.lngLat.lng - coords[0]) > 180) {
-      coords[0] += e.lngLat.lng > coords[0] ? 360 : -360;
-    }
-
-    const html = `
-      <div class="popup-institution">${escapeHtml(institution)}</div>
-      <div class="popup-row"><span class="label">Country:</span> ${escapeHtml(
-        country
-      )}</div>
-      <div class="popup-row"><span class="label">Papers:</span> ${papers}</div>
-    `;
-
-    new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
-      .setLngLat(coords)
-      .setHTML(html)
-      .addTo(map);
+  map.on("click", layerId, (e) => {
+    showPopup(e, buildHtml(e.features[0].properties));
   });
+}
+
+/**
+ * Adds both layers. The country layer only shows BELOW the switch zoom,
+ * the institution layer only AT/ABOVE it.
+ */
+function addLayers(institutionsGeoJSON, countriesGeoJSON) {
+  map.addSource("countries", { type: "geojson", data: countriesGeoJSON });
+  map.addSource("institutions", { type: "geojson", data: institutionsGeoJSON });
+
+  map.addLayer(
+    circleLayer("countries-circles", "countries", { maxzoom: COUNTRY_TO_INSTITUTION_ZOOM })
+  );
+  map.addLayer(
+    circleLayer("institutions-circles", "institutions", { minzoom: COUNTRY_TO_INSTITUTION_ZOOM })
+  );
+
+  makeClickable("countries-circles", countryPopupHtml);
+  makeClickable("institutions-circles", institutionPopupHtml);
 }
 
 // Minimal HTML-escaping so institution/country names can't break the popup markup.
@@ -270,9 +413,22 @@ function loadData() {
         console.warn("CSV parse warnings:", parsed.errors);
       }
 
-      const { geojson, skippedCount, totalCount } = buildGeoJSON(parsed.data);
+      const parsedRows = parseRows(parsed.data);
+      const institutionsGeoJSON = buildInstitutionsGeoJSON(parsedRows);
+      const countriesGeoJSON = buildCountriesGeoJSON(parsedRows);
 
-      if (geojson.features.length === 0) {
+      const totalCount = parsed.data.length;
+      const skippedRows = parsedRows.filter((r) => !r.hasCoords);
+      const skippedCount = totalCount - institutionsGeoJSON.features.length;
+
+      if (skippedRows.length > 0) {
+        console.warn(
+          `${skippedRows.length} institution(s) have no coordinates (not drawn zoomed in, but still counted in country totals):`,
+          skippedRows.map((r) => r.institution)
+        );
+      }
+
+      if (institutionsGeoJSON.features.length === 0) {
         showStatus(
           "No institutions with valid coordinates were found in the CSV.",
           true
@@ -280,17 +436,17 @@ function loadData() {
         return;
       }
 
-      const addLayerOnce = () => addInstitutionsLayer(geojson);
+      const addLayersOnce = () => addLayers(institutionsGeoJSON, countriesGeoJSON);
       if (map.isStyleLoaded()) {
-        addLayerOnce();
+        addLayersOnce();
       } else {
-        map.once("load", addLayerOnce);
+        map.once("load", addLayersOnce);
       }
 
       if (skippedCount > 0) {
         showStatus(
           `Showing ${totalCount - skippedCount} of ${totalCount} institutions ` +
-            `(${skippedCount} skipped — missing latitude/longitude). See browser console for the list.`
+            `(${skippedCount} not drawn when zoomed in — missing coordinates; they still count in country totals). See browser console for the list.`
         );
       } else {
         hideStatus();
